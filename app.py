@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (79点レイアウト＆回転機能付き・最終完成版)
+#  app.py - 歩行分析アプリ (真・最終完成版)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -13,7 +13,7 @@ import os
 import tempfile
 import japanize_matplotlib
 
-# --- メインの分析ロジック (変更なし) ---
+# --- メインの分析ロジック ---
 def analyze_walking(video_path, progress_bar, status_text, should_rotate):
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -159,7 +159,6 @@ def main_app():
         st.title("分析内容の確認")
         st.video(st.session_state.uploaded_file_data)
         st.write("---")
-        # ★★★ ここです！このチェックボックスが復活しました ★★★
         should_rotate = st.checkbox("【スマホで撮影した縦動画の場合】ここに必ずチェックを入れてください")
         st.write("---")
         if st.button("この動画を分析する", type="primary"):
