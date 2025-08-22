@@ -173,4 +173,40 @@ def main_app():
             st.rerun()
     elif st.session_state.page == "confirm":
         st.title("分析内容の確認")
-        
+        st.video(st.session_state.uploaded_file_data)
+        st.write("---")
+        # ★★★ 回転チェックボックスを、完全に削除しました ★★★
+        if st.button("この動画を分析する", type="primary"):
+            st.session_state.page = "analysis"
+            st.rerun()
+    elif st.session_state.page == "analysis":
+        st.title("分析中...")
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
+            tfile.write(st.session_state.uploaded_file_data)
+            temp_video_path = tfile.name
+        output_video_path, summary = None, None
+        try:
+            output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text)
+            if output_video_path and summary:
+                with open(output_video_path, 'rb') as f:
+                    st.session_state.video_bytes = f.read()
+                st.session_state.summary = summary
+                st.session_state.page = "results"
+            else:
+                st.session_state.page = "error"
+        finally:
+            if os.path.exists(temp_video_path): os.remove(temp_video_path)
+            if output_video_path and os.path.exists(output_video_path): os.remove(output_video_path)
+        st.rerun()
+    elif st.session_state.page == "results":
+        display_results()
+    elif st.session_state.page == "error":
+        st.error("分析中にエラーが発生しました。動画が短すぎるか、人物がうまく認識できなかった可能性があります。")
+        if st.button("やり直す"):
+            st.session_state.page = "main"
+            st.rerun()
+
+if __name__ == "__main__":
+    main_app()
