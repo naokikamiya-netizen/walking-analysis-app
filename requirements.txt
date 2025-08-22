@@ -5,3 +5,4 @@ mediapipe
 numpy
 pandas
 matplotlib
+japanize-matplotlib
