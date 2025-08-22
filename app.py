@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (真・最終完成版 - 全エラー修正済)
+#  app.py - 歩行分析アプリ (真・最終完成版 - v1.1 UI微調整)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -95,17 +95,24 @@ def analyze_walking(video_path, progress_bar, status_text):
     out = cv2.VideoWriter(temp_output.name, cv2.VideoWriter_fourcc(*'mp4v'), fps, (final_w, final_h))
     time_stamps, y_limit = np.arange(len(angles_np)) / fps, 15.0
     summary_h = int(final_h * 0.45)
-    font_size = 20
+    
+    # === ▼▼▼ ここからが修正箇所 ▼▼▼ ===
+    font_size_label = 20  # ラベル用のフォントサイズ
+    font_size_value = 28  # ★数値用の大きなフォントサイズを新設
     fig_s, ax_s = plt.subplots(figsize=(right_panel_w/100, summary_h/100), dpi=100, facecolor='#1E1E1E')
     ax_s.axis('off')
     static_label = "静的傾斜 (立位):"
     static_value_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size)]
-    texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size)]
-    texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size))
-    texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size))
+    # 静的傾斜のラベルと数値を、それぞれ別のフォントサイズに設定
+    ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size_label, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
+    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size_value, ha='center', va='center', transform=ax_s.transAxes, weight='bold') # ★ここを font_size_value に
+    # 動的傾斜のラベル(左)と数値(右)で、フォントサイズを使い分ける
+    texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size_label)] # ラベル
+    texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size_value)] # ★数値を font_size_value に
+    texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size_label)) # ラベル
+    texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size_value)) # ★数値を font_size_value に
+    # === ▲▲▲ ここまでが修正箇所 ▲▲▲ ===
+
     for x, y, text, color, size in texts_left: ax_s.text(x, y, text, color=color, fontsize=size, ha='left', va='center', transform=ax_s.transAxes, weight='bold')
     for x, y, text, color, size in texts_right: ax_s.text(x, y, text, color=color, fontsize=size, ha='right', va='center', transform=ax_s.transAxes, weight='bold')
     fig_s.tight_layout(pad=0); fig_s.canvas.draw(); summary_img_base = cv2.cvtColor(np.asarray(fig_s.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR); plt.close(fig_s)
