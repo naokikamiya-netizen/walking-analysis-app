@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (真・最終完成版 - Streamlit Cloud対応)
+#  app.py - 歩行分析アプリ (真・最終完成版 - フォント直指定)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -9,9 +9,18 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import os
 import tempfile
-import japanize_matplotlib
+
+# --- フォントの設定 ---
+FONT_PATH = 'NotoSansJP-Bold.otf'
+if os.path.exists(FONT_PATH):
+    font_prop = fm.FontProperties(fname=FONT_PATH)
+else:
+    # フォントがない場合は、とりあえずデフォルトで動かす（ローカル実行用）
+    font_prop = fm.FontProperties()
+    st.warning(f"フォントファイル '{FONT_PATH}' が見つかりません。日本語が文字化けする可能性があります。")
 
 # --- メインの分析ロジック ---
 def analyze_walking(video_path, progress_bar, status_text, should_rotate):
@@ -85,14 +94,14 @@ def analyze_walking(video_path, progress_bar, status_text, should_rotate):
     ax_s.axis('off')
     static_label = "静的傾斜 (立位):"
     static_value_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
+    ax_s.text(0.5, 0.85, static_label, color='white', ha='center', va='center', fontproperties=font_prop, size=font_size)
+    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', ha='center', va='center', fontproperties=font_prop, size=font_size)
     texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size)]
     texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size)]
     texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size))
     texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size))
-    for x, y, text, color, size in texts_left: ax_s.text(x, y, text, color=color, fontsize=size, ha='left', va='center', transform=ax_s.transAxes, weight='bold')
-    for x, y, text, color, size in texts_right: ax_s.text(x, y, text, color=color, fontsize=size, ha='right', va='center', transform=ax_s.transAxes, weight='bold')
+    for x, y, text, color, size in texts_left: ax_s.text(x, y, text, color=color, ha='left', va='center', fontproperties=font_prop, size=size)
+    for x, y, text, color, size in texts_right: ax_s.text(x, y, text, color=color, ha='right', va='center', fontproperties=font_prop, size=size)
     fig_s.tight_layout(pad=0); fig_s.canvas.draw(); summary_img_base = cv2.cvtColor(np.asarray(fig_s.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR); plt.close(fig_s)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     for i in range(total_frames):
@@ -108,4 +117,92 @@ def analyze_walking(video_path, progress_bar, status_text, should_rotate):
         ax_g.tick_params(colors='white', labelsize=10); [s.set_edgecolor('white') for s in ax_g.spines.values()]
         ax_g.plot(time_stamps, angles_np, color='#00FFFF', lw=2)
         if i < len(time_stamps): ax_g.plot(time_stamps[i], angles_np[i], 'o', markersize=8, color='#FF1493')
-        ax_g.axh
+        ax_g.axhline(0, color='red', linestyle='--', lw=1)
+        ax_g.set_title('肩ラインの傾斜 (生の角度)', color='white', fontproperties=font_prop, size=16, pad=10)
+        ax_g.set_xlabel('時間(秒)', color='white', fontproperties=font_prop, size=12)
+        ax_g.set_ylabel('角度(度)', color='white', fontproperties=font_prop, size=12)
+        ax_g.set_ylim(-y_limit, y_limit); ax_g.grid(True, linestyle=':', color='gray', alpha=0.7); ax_g.legend([], frameon=False)
+        fig_g.tight_layout(pad=1.5); fig_g.canvas.draw(); graph_img = cv2.cvtColor(np.asarray(fig_g.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR); plt.close(fig_g)
+        right_panel = cv2.vconcat([graph_img, summary_img_base])
+        final_frame = cv2.hconcat([image, right_panel])
+        out.write(final_frame)
+    out.release(); cap.release()
+    status_text.text("完了！")
+    return temp_output.name, summary
+
+# --- UI制御と結果表示用の関数 ---
+def display_results():
+    st.success("🎉 分析が完了しました！")
+    st.balloons()
+    st.subheader("分析結果ビデオ")
+    st.video(st.session_state.video_bytes)
+    st.subheader("分析結果サマリー")
+    
+    summary = st.session_state.summary
+    static_tilt_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
+    st.metric(label="静的傾斜 (立位姿勢のクセ)", value=static_tilt_text)
+
+    col1, col2 = st.columns(2)
+    col1.metric(label="動的傾斜 (歩行中の揺れ・右)", value=f"{abs(summary['avg_right_down_dynamic']):.2f}", help="歩行中に右肩が下がった時の、平均的な傾きの大きさです。")
+    col2.metric(label="動的傾斜 (歩行中の揺れ・左)", value=f"{summary['avg_left_down_dynamic']:.2f}", help="歩行中に左肩が下がった時の、平均的な傾きの大きさです。")
+    
+    st.download_button(label="結果のビデオをダウンロード", data=st.session_state.video_bytes, file_name="result.mp4", mime="video/mp4")
+    if st.button("新しい動画を分析する"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+def main_app():
+    st.set_page_config(page_title="歩行分析アプリ", layout="wide")
+    if 'page' not in st.session_state:
+        st.session_state.page = 'main'
+    if st.session_state.page == 'main':
+        st.title("🚶‍♂️ 歩行分析アプリ")
+        st.write("---")
+        st.write("スマートフォンで撮影した歩行動画をアップロードするだけで、体幹の側屈を自動で分析し、グラフ付きの動画を生成します。")
+        uploaded_file = st.file_uploader("ここに動画ファイル（mp4, movなど）をドラッグ＆ドロップしてください", type=["mp4", "mov", "avi", "m4v"], key="file_uploader")
+        if uploaded_file:
+            st.session_state.uploaded_file_data = uploaded_file.getvalue()
+            st.session_state.page = "confirm"
+            st.rerun()
+    elif st.session_state.page == "confirm":
+        st.title("分析内容の確認")
+        st.video(st.session_state.uploaded_file_data)
+        st.write("---")
+        should_rotate = st.checkbox("【スマホで撮影した縦動画の場合】ここに必ずチェックを入れてください")
+        st.write("---")
+        if st.button("この動画を分析する", type="primary"):
+            st.session_state.should_rotate = should_rotate
+            st.session_state.page = "analysis"
+            st.rerun()
+    elif st.session_state.page == "analysis":
+        st.title("分析中...")
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
+            tfile.write(st.session_state.uploaded_file_data)
+            temp_video_path = tfile.name
+        output_video_path, summary = None, None
+        try:
+            output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text, st.session_state.should_rotate)
+            if output_video_path and summary:
+                with open(output_video_path, 'rb') as f:
+                    st.session_state.video_bytes = f.read()
+                st.session_state.summary = summary
+                st.session_state.page = "results"
+            else:
+                st.session_state.page = "error"
+        finally:
+            if os.path.exists(temp_video_path): os.remove(temp_video_path)
+            if output_video_path and os.path.exists(output_video_path): os.remove(output_video_path)
+        st.rerun()
+    elif st.session_state.page == "results":
+        display_results()
+    elif st.session_state.page == "error":
+        st.error("分析中にエラーが発生しました。動画が短すぎるか、人物がうまく認識できなかった可能性があります。")
+        if st.button("やり直す"):
+            st.session_state.page = "main"
+            st.rerun()
+
+if __name__ == "__main__":
+    main_app()
