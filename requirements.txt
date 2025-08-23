@@ -1,8 +1,4 @@
 streamlit
-scipy
 opencv-python-headless
-mediapipe
-numpy
-pandas
-matplotlib
-japanize-matplotlib
+medipe
+...
