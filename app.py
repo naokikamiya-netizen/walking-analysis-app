@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (真・最終完成版 - v1.1 UI微調整)
+#  app.py - 歩行分析アプリ (v1.2 - 後ろ姿の左右反転補正ロジック追加版)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -11,10 +11,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import tempfile
-import japanize_matplotlib # 日本語表示のために、これを再度有効化します
+import japanize_matplotlib # 日本語表示のため
 
 # --- メインの分析ロジック ---
-# ★★★ 自動回転ロジックを完全に削除しました ★★★
 def analyze_walking(video_path, progress_bar, status_text):
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -29,39 +28,63 @@ def analyze_walking(video_path, progress_bar, status_text):
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     all_angles, all_landmarks = [], []
     
-    # ★★★ 最初のフレームのサイズを取得するために、一度だけ読み込みます ★★★
     success, first_frame = cap.read()
     if not success:
         st.error("エラー: 動画フレームを読み込めませんでした。")
         cap.release()
         return None, None
     frame_h, frame_w, _ = first_frame.shape
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0) # ポインタを最初に戻します
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for frame_count in range(total_frames):
         success, image = cap.read()
         if not success: break
         progress_bar.progress((frame_count + 1) / total_frames * 0.5)
-        
-        # ★★★ ここにあった回転命令を、すべて削除しました ★★★
             
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         results = pose.process(image_rgb)
         all_landmarks.append(results.pose_landmarks)
         current_angle = 0
+        
+        # ==========================================================
+        # ★★★ ここからが左右反転補正ロジックの追加箇所です ★★★
+        # ==========================================================
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             try:
-                p_ls, p_rs = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value], landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-                # ★★★ Y座標とX座標の差分を、フレームの向きに合わせて正しく計算します ★★★
-                delta_y = (p_rs.y - p_ls.y) * frame_h
-                delta_x = (p_rs.x - p_ls.x) * frame_w
-                angle = math.degrees(math.atan2(delta_y, delta_x))
-                if angle > 90: angle -= 180
-                elif angle < -90: angle += 180
-                if abs(angle) < 80: current_angle = -angle
-            except Exception: pass
+                # 1. まずはモデルが認識したままのランドマークを取得
+                p_ls_raw = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+                p_rs_raw = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+
+                # 2. 両肩のランドマークがある程度の信頼度で検出されているか確認
+                if p_ls_raw.visibility > 0.6 and p_rs_raw.visibility > 0.6:
+                    
+                    # 3. 反転補正の核心部: 後ろ姿の前提を利用
+                    # モデルが認識した「左肩」が「右肩」よりも画像の右側にあれば、左右が反転していると判断
+                    if p_ls_raw.x > p_rs_raw.x:
+                        # 変数が指すランドマークを入れ替えて補正する
+                        p_ls, p_rs = p_rs_raw, p_ls_raw
+                    else:
+                        # 反転していない場合はそのまま使用
+                        p_ls, p_rs = p_ls_raw, p_rs_raw
+
+                    # 4. 補正後の正しい左右関係の変数を使って角度を計算
+                    delta_y = (p_rs.y - p_ls.y) * frame_h
+                    delta_x = (p_rs.x - p_ls.x) * frame_w
+                    angle = math.degrees(math.atan2(delta_y, delta_x))
+                    
+                    if angle > 90: angle -= 180
+                    elif angle < -90: angle += 180
+                    if abs(angle) < 80: current_angle = -angle
+            
+            except Exception:
+                # ランドマークが取得できなかった等の例外が発生した場合は何もしない
+                pass
+        # ==========================================================
+        # ★★★ ここまでが修正箇所です ★★★
+        # ==========================================================
         all_angles.append(current_angle)
+        
     cap.release(); pose.close()
 
     if not all_angles or len(all_angles) < int(fps): return None, None
@@ -96,22 +119,18 @@ def analyze_walking(video_path, progress_bar, status_text):
     time_stamps, y_limit = np.arange(len(angles_np)) / fps, 15.0
     summary_h = int(final_h * 0.45)
     
-    # === ▼▼▼ ここからが修正箇所 ▼▼▼ ===
-    font_size_label = 20  # ラベル用のフォントサイズ
-    font_size_value = 28  # ★数値用の大きなフォントサイズを新設
+    font_size_label = 20
+    font_size_value = 28
     fig_s, ax_s = plt.subplots(figsize=(right_panel_w/100, summary_h/100), dpi=100, facecolor='#1E1E1E')
     ax_s.axis('off')
     static_label = "静的傾斜 (立位):"
     static_value_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    # 静的傾斜のラベルと数値を、それぞれ別のフォントサイズに設定
     ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size_label, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size_value, ha='center', va='center', transform=ax_s.transAxes, weight='bold') # ★ここを font_size_value に
-    # 動的傾斜のラベル(左)と数値(右)で、フォントサイズを使い分ける
-    texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size_label)] # ラベル
-    texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size_value)] # ★数値を font_size_value に
-    texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size_label)) # ラベル
-    texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size_value)) # ★数値を font_size_value に
-    # === ▲▲▲ ここまでが修正箇所 ▲▲▲ ===
+    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size_value, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
+    texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size_label)]
+    texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size_value)]
+    texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size_label))
+    texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size_value))
 
     for x, y, text, color, size in texts_left: ax_s.text(x, y, text, color=color, fontsize=size, ha='left', va='center', transform=ax_s.transAxes, weight='bold')
     for x, y, text, color, size in texts_right: ax_s.text(x, y, text, color=color, fontsize=size, ha='right', va='center', transform=ax_s.transAxes, weight='bold')
@@ -122,7 +141,6 @@ def analyze_walking(video_path, progress_bar, status_text):
         success, image = cap.read()
         if not success: break
         progress_bar.progress(0.5 + (i + 1) / total_frames * 0.5)
-        # ★★★ ここにあった回転命令を、すべて削除しました ★★★
         if i < len(all_landmarks) and all_landmarks[i]:
             mp_drawing.draw_landmarks(image, all_landmarks[i], mp_pose.POSE_CONNECTIONS, landmark_drawing_spec=mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=2), connection_drawing_spec=mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2))
         graph_h = final_h - summary_h
@@ -182,7 +200,6 @@ def main_app():
         st.title("分析内容の確認")
         st.video(st.session_state.uploaded_file_data)
         st.write("---")
-        # ★★★ 回転チェックボックスを、完全に削除しました ★★★
         if st.button("この動画を分析する", type="primary"):
             st.session_state.page = "analysis"
             st.rerun()
