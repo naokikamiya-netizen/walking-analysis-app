@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.5 - 高安定化版・改)
+#  app.py - 歩行分析アプリ (v1.6 - NameError修正版)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -13,15 +13,17 @@ import os
 import tempfile
 import japanize_matplotlib # 日本語表示のため
 
-# --- メインの分析ロジック ---
+# --- メインの分析ロ-ジック ---
 def analyze_walking(video_path, progress_bar, status_text):
-    mp_pose = mp_solutions.pose
+    # ★★★ NameErrorの原因だったタイプミスを修正 ★★★
+    mp_pose = mp.solutions.pose
     
-    # ★★★ 修正点: 信頼度閾値を元の「0.5」に戻します ★★★
-    # これでまずデータを確実に取得し、ノイズは後段のスムージングで除去します。
+    # 信頼度閾値は「0.5」に戻します
     pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
     
+    # ★★★ NameErrorの原因だったタイプミスを修正 ★★★
     mp_drawing = mp.solutions.drawing_utils
+    
     status_text.text("ステップ1/2: 分析データを収集中...")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -66,8 +68,6 @@ def analyze_walking(video_path, progress_bar, status_text):
                             is_flipped = True
                         orientation_locked = True
                 
-                # orientation_lockedが一度Trueになれば、その後のフレームでも角度を計算し続ける
-                # v1.4ではconfidenceを上げたせいで、ここで弾かれていた
                 if p_ls_raw.visibility > 0.5 and p_rs_raw.visibility > 0.5:
                     p_ls, p_rs = (p_rs_raw, p_ls_raw) if is_flipped else (p_ls_raw, p_rs_raw)
                     delta_y = (p_rs.y - p_ls.y) * frame_h
@@ -95,7 +95,7 @@ def analyze_walking(video_path, progress_bar, status_text):
             filtered_angles.append(all_angles[i])
     angles_series = pd.Series(filtered_angles)
     
-    # ★★★ スムージング強化はそのまま維持します ★★★
+    # スムージング強化はそのまま維持します
     smoothed_angles = angles_series.rolling(window=11, min_periods=1, center=True).mean().tolist()
     
     angles_np = np.array(smoothed_angles)
@@ -163,7 +163,7 @@ def analyze_walking(video_path, progress_bar, status_text):
     status_text.text("完了！")
     return temp_output.name, summary
 
-# (UI部分は変更なし)
+# --- UI制御と結果表示用の関数 (変更なし) ---
 def display_results():
     st.success("🎉 分析が完了しました！")
     st.balloons()
