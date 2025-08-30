@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.2 - 後ろ姿の左右反転補正ロジック追加版)
+#  app.py - 歩行分析アプリ (v1.4 - Streamlit向け高安定化版)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -16,7 +16,10 @@ import japanize_matplotlib # 日本語表示のため
 # --- メインの分析ロジック ---
 def analyze_walking(video_path, progress_bar, status_text):
     mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    
+    # ★★★ 修正点①: AIモデルの信頼度閾値を上げて、不安定な検出を減らす ★★★
+    pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.7, min_tracking_confidence=0.7)
+    
     mp_drawing = mp.solutions.drawing_utils
     status_text.text("ステップ1/2: 分析データを収集中...")
     cap = cv2.VideoCapture(video_path)
@@ -36,6 +39,10 @@ def analyze_walking(video_path, progress_bar, status_text):
     frame_h, frame_w, _ = first_frame.shape
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
+    # (v1.3で導入した初期認識ロック機能は、安定性向上のためそのまま維持します)
+    orientation_locked = False
+    is_flipped = False
+
     for frame_count in range(total_frames):
         success, image = cap.read()
         if not success: break
@@ -46,29 +53,21 @@ def analyze_walking(video_path, progress_bar, status_text):
         all_landmarks.append(results.pose_landmarks)
         current_angle = 0
         
-        # ==========================================================
-        # ★★★ ここからが左右反転補正ロジックの追加箇所です ★★★
-        # ==========================================================
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             try:
-                # 1. まずはモデルが認識したままのランドマークを取得
                 p_ls_raw = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
                 p_rs_raw = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+                nose = landmarks[mp_pose.PoseLandmark.NOSE.value]
 
-                # 2. 両肩のランドマークがある程度の信頼度で検出されているか確認
-                if p_ls_raw.visibility > 0.6 and p_rs_raw.visibility > 0.6:
-                    
-                    # 3. 反転補正の核心部: 後ろ姿の前提を利用
-                    # モデルが認識した「左肩」が「右肩」よりも画像の右側にあれば、左右が反転していると判断
-                    if p_ls_raw.x > p_rs_raw.x:
-                        # 変数が指すランドマークを入れ替えて補正する
-                        p_ls, p_rs = p_rs_raw, p_ls_raw
-                    else:
-                        # 反転していない場合はそのまま使用
-                        p_ls, p_rs = p_ls_raw, p_rs_raw
-
-                    # 4. 補正後の正しい左右関係の変数を使って角度を計算
+                if not orientation_locked and p_ls_raw.visibility > 0.7 and p_rs_raw.visibility > 0.7:
+                    if nose.visibility < 0.1:
+                        if p_rs_raw.x > p_ls_raw.x:
+                            is_flipped = True
+                        orientation_locked = True
+                
+                if orientation_locked:
+                    p_ls, p_rs = (p_rs_raw, p_ls_raw) if is_flipped else (p_ls_raw, p_rs_raw)
                     delta_y = (p_rs.y - p_ls.y) * frame_h
                     delta_x = (p_rs.x - p_ls.x) * frame_w
                     angle = math.degrees(math.atan2(delta_y, delta_x))
@@ -78,11 +77,8 @@ def analyze_walking(video_path, progress_bar, status_text):
                     if abs(angle) < 80: current_angle = -angle
             
             except Exception:
-                # ランドマークが取得できなかった等の例外が発生した場合は何もしない
                 pass
-        # ==========================================================
-        # ★★★ ここまでが修正箇所です ★★★
-        # ==========================================================
+        
         all_angles.append(current_angle)
         
     cap.release(); pose.close()
@@ -96,7 +92,10 @@ def analyze_walking(video_path, progress_bar, status_text):
         else:
             filtered_angles.append(all_angles[i])
     angles_series = pd.Series(filtered_angles)
-    smoothed_angles = angles_series.rolling(window=5, min_periods=1, center=True).mean().tolist()
+    
+    # ★★★ 修正点②: スムージング処理を強化して、グラフのギザギザをなくす ★★★
+    smoothed_angles = angles_series.rolling(window=11, min_periods=1, center=True).mean().tolist()
+    
     angles_np = np.array(smoothed_angles)
     num_static_frames = min(int(fps * 1.0), 30)
     if len(angles_np) <= num_static_frames: return None, None
@@ -110,6 +109,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         'avg_right_down_dynamic': np.mean(right_down_angles) if len(right_down_angles) > 0 else 0
     }
 
+    # (以降の描画処理は変更ありません)
     status_text.text("ステップ2/2: 結果のビデオを生成中...")
     cap = cv2.VideoCapture(video_path)
         
@@ -161,7 +161,7 @@ def analyze_walking(video_path, progress_bar, status_text):
     status_text.text("完了！")
     return temp_output.name, summary
 
-# --- UI制御と結果表示用の関数 ---
+# --- UI制御と結果表示用の関数 (変更なし) ---
 def display_results():
     st.success("🎉 分析が完了しました！")
     st.balloons()
