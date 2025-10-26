@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.6_no_rotate)
+#  app.py - 歩行分析アプリ (v1.6_auto_orient)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -11,7 +11,31 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import tempfile
-import japanize_matplotlib  # 日本語表示のため
+import japanize_matplotlib
+from PIL import Image, ExifTags
+
+# --- EXIFから回転情報を取得して補正 ---
+def correct_orientation(image_path):
+    try:
+        img = Image.open(image_path)
+        exif = img._getexif()
+        if exif is not None:
+            orientation_key = next((k for k, v in ExifTags.TAGS.items() if v == 'Orientation'), None)
+            if orientation_key and orientation_key in exif:
+                orientation = exif[orientation_key]
+                if orientation == 3:
+                    img = img.rotate(180, expand=True)
+                elif orientation == 6:
+                    img = img.rotate(270, expand=True)
+                elif orientation == 8:
+                    img = img.rotate(90, expand=True)
+        temp_corrected = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        img.save(temp_corrected.name)
+        return temp_corrected.name
+    except Exception:
+        pass
+    return image_path  # 補正できなければそのまま返す
+
 
 # --- メインの分析ロジック ---
 def analyze_walking(video_path, progress_bar, status_text):
@@ -40,7 +64,13 @@ def analyze_walking(video_path, progress_bar, status_text):
         cap.release()
         return None, None
 
-    frame_h, frame_w, _ = first_frame.shape
+    # --- EXIFの回転補正を適用 ---
+    corrected_first_frame_path = correct_orientation(video_path)
+    if corrected_first_frame_path != video_path:
+        cap.release()
+        cap = cv2.VideoCapture(corrected_first_frame_path)
+
+    frame_h, frame_w = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     orientation_locked = False
@@ -50,9 +80,6 @@ def analyze_walking(video_path, progress_bar, status_text):
         success, image = cap.read()
         if not success:
             break
-
-        # ✅ ここでの90°回転処理を削除（OpenCVがそのままの向きで扱う）
-        # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress((frame_count + 1) / total_frames * 0.5)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -123,7 +150,7 @@ def analyze_walking(video_path, progress_bar, status_text):
     }
 
     status_text.text("ステップ2/2: 結果のビデオを生成中...")
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(corrected_first_frame_path)
     right_panel_w = int(frame_w * 0.7)
     final_w = frame_w + right_panel_w
     final_h = frame_h
@@ -143,6 +170,7 @@ def analyze_walking(video_path, progress_bar, status_text):
     static_value_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
     ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size_label, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
     ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size_value, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
+
     texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size_label)]
     texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size_value)]
     texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size_label))
@@ -152,6 +180,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         ax_s.text(x, y, text, color=color, fontsize=size, ha='left', va='center', transform=ax_s.transAxes, weight='bold')
     for x, y, text, color, size in texts_right:
         ax_s.text(x, y, text, color=color, fontsize=size, ha='right', va='center', transform=ax_s.transAxes, weight='bold')
+
     fig_s.tight_layout(pad=0)
     fig_s.canvas.draw()
     summary_img_base = cv2.cvtColor(np.asarray(fig_s.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
@@ -162,9 +191,6 @@ def analyze_walking(video_path, progress_bar, status_text):
         success, image = cap.read()
         if not success:
             break
-
-        # ✅ 出力時も回転を行わない
-        # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress(0.5 + (i + 1) / total_frames * 0.5)
         if i < len(all_landmarks) and all_landmarks[i]:
@@ -204,85 +230,28 @@ def analyze_walking(video_path, progress_bar, status_text):
     return temp_output.name, summary
 
 
-# --- UI制御と結果表示用の関数 ---
-def display_results():
-    st.success("🎉 分析が完了しました！")
-    st.balloons()
-    st.subheader("分析結果ビデオ")
-    st.video(st.session_state.video_bytes)
-    st.subheader("分析結果サマリー")
-    summary = st.session_state.summary
-    static_tilt_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    st.metric(label="静的傾斜 (立位姿勢のクセ)", value=static_tilt_text)
-    col1, col2 = st.columns(2)
-    col1.metric(label="動的傾斜 (歩行中の揺れ・右)", value=f"{abs(summary['avg_right_down_dynamic']):.2f}")
-    col2.metric(label="動的傾斜 (歩行中の揺れ・左)", value=f"{summary['avg_left_down_dynamic']:.2f}")
-    st.download_button(label="結果のビデオをダウンロード", data=st.session_state.video_bytes, file_name="result.mp4", mime="video/mp4")
-    if st.button("新しい動画を分析する"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-
-
+# --- UI ---
 def main_app():
     st.set_page_config(page_title="歩行分析アプリ", layout="wide")
+    st.title("🚶‍♂️ 歩行分析アプリ（自動回転補正付き）")
+    uploaded_file = st.file_uploader("動画をアップロードしてください", type=["mp4", "mov", "avi", "m4v"])
 
-    if 'page' not in st.session_state:
-        st.session_state.page = 'main'
-
-    if st.session_state.page == 'main':
-        st.title("🚶‍♂️ 歩行分析アプリ")
-        st.write("---")
-        st.write("スマートフォンで撮影した歩行動画をアップロードするだけで、体幹の側屈を自動で分析し、グラフ付きの動画を生成します。")
-
-        uploaded_file = st.file_uploader("ここに動画ファイルをドラッグ＆ドロップしてください", type=["mp4", "mov", "avi", "m4v"], key="file_uploader")
-        if uploaded_file:
-            st.session_state.uploaded_file_data = uploaded_file.getvalue()
-            st.session_state.page = "confirm"
-            st.rerun()
-
-    elif st.session_state.page == "confirm":
-        st.title("分析内容の確認")
-        st.video(st.session_state.uploaded_file_data)
-        st.write("---")
-        if st.button("この動画を分析する", type="primary"):
-            st.session_state.page = "analysis"
-            st.rerun()
-
-    elif st.session_state.page == "analysis":
-        st.title("分析中...")
-        progress_bar = st.progress(0.0)
-        status_text = st.empty()
+    if uploaded_file:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-            tfile.write(st.session_state.uploaded_file_data)
+            tfile.write(uploaded_file.getvalue())
             temp_video_path = tfile.name
 
-        output_video_path, summary = None, None
-        try:
-            output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text)
-            if output_video_path and summary:
-                with open(output_video_path, 'rb') as f:
-                    st.session_state.video_bytes = f.read()
-                st.session_state.summary = summary
-                st.session_state.page = "results"
-            else:
-                st.session_state.page = "error"
-        finally:
-            if os.path.exists(temp_video_path):
-                os.remove(temp_video_path)
-            if output_video_path and os.path.exists(output_video_path):
-                os.remove(output_video_path)
-        st.rerun()
+        progress_bar = st.progress(0.0)
+        status_text = st.empty()
+        output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text)
 
-    elif st.session_state.page == "results":
-        display_results()
-
-    elif st.session_state.page == "error":
-        st.error("分析中にエラーが発生しました。人物がうまく認識できなかった可能性があります。")
-        if st.button("やり直す"):
-            st.session_state.page = "main"
-            st.rerun()
-
+        if output_video_path:
+            st.success("分析完了！")
+            st.video(output_video_path)
+            st.write("### 結果サマリー")
+            st.json(summary)
+        else:
+            st.error("分析に失敗しました。動画が短いか、姿勢が検出できなかった可能性があります。")
 
 if __name__ == "__main__":
     main_app()
