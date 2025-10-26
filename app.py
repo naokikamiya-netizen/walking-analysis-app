@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.7_no_rotate)
+#  app.py - 歩行分析アプリ (v1.7_no_rotate_fix)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -46,7 +46,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         if not success:
             break
 
-        # 🔻 ここで勝手に90°回転していた処理を無効化
+        # 🔻 90°回転していた処理を無効化
         # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress((frame_count + 1) / total_frames * 0.5)
@@ -119,6 +119,11 @@ def analyze_walking(video_path, progress_bar, status_text):
     # --- 結果ビデオ生成 ---
     status_text.text("ステップ2/2: 結果のビデオを生成中...")
     cap = cv2.VideoCapture(video_path)
+
+    # ✅ 黒画面対策：再度フレームサイズを取得し直す
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+
     right_panel_w = int(frame_w * 0.7)
     final_w = frame_w + right_panel_w
     final_h = frame_h
@@ -159,7 +164,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         if not success:
             break
 
-        # 🔻 出力時も回転を無効化
+        # 🔻 出力時の回転も無効化
         # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress(0.5 + (i + 1) / total_frames * 0.5)
