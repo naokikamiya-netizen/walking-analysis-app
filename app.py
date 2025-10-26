@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.7R - 回転補正OFF版)
+#  app.py - 歩行分析アプリ (v1.7_no_rotate)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -16,8 +16,7 @@ import japanize_matplotlib  # 日本語表示のため
 # --- メインの分析ロジック ---
 def analyze_walking(video_path, progress_bar, status_text):
     mp_pose = mp.solutions.pose
-    pose = mp_pose.Pose(static_image_mode=False, model_complexity=1,
-                        min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
     mp_drawing = mp.solutions.drawing_utils
 
     status_text.text("ステップ1/2: 分析データを収集中...")
@@ -36,7 +35,6 @@ def analyze_walking(video_path, progress_bar, status_text):
         cap.release()
         return None, None
 
-    # ★★★ 回転補正削除：アップロードした向きのまま処理 ★★★
     frame_h, frame_w, _ = first_frame.shape
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
@@ -48,7 +46,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         if not success:
             break
 
-        # ★★★ ここも回転補正削除 ★★★
+        # 🔻 ここで勝手に90°回転していた処理を無効化
         # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress((frame_count + 1) / total_frames * 0.5)
@@ -161,7 +159,7 @@ def analyze_walking(video_path, progress_bar, status_text):
         if not success:
             break
 
-        # ★★★ 出力フレームも回転補正削除 ★★★
+        # 🔻 出力時も回転を無効化
         # image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
         progress_bar.progress(0.5 + (i + 1) / total_frames * 0.5)
@@ -171,6 +169,7 @@ def analyze_walking(video_path, progress_bar, status_text):
                 landmark_drawing_spec=mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
                 connection_drawing_spec=mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
             )
+
         graph_h = final_h - summary_h
         fig_g, ax_g = plt.subplots(figsize=(right_panel_w/100, graph_h/100), dpi=100)
         fig_g.set_facecolor('#1E1E1E')
@@ -186,11 +185,11 @@ def analyze_walking(video_path, progress_bar, status_text):
         ax_g.set_ylabel('角度(度)', color='white', fontsize=12)
         ax_g.set_ylim(-y_limit, y_limit)
         ax_g.grid(True, linestyle=':', color='gray', alpha=0.7)
-        ax_g.legend([], frameon=False)
         fig_g.tight_layout(pad=1.5)
         fig_g.canvas.draw()
         graph_img = cv2.cvtColor(np.asarray(fig_g.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
         plt.close(fig_g)
+
         right_panel = cv2.vconcat([graph_img, summary_img_base])
         final_frame = cv2.hconcat([image, right_panel])
         out.write(final_frame)
@@ -199,82 +198,3 @@ def analyze_walking(video_path, progress_bar, status_text):
     cap.release()
     status_text.text("完了！")
     return temp_output.name, summary
-
-# --- UI ---
-def display_results():
-    st.success("🎉 分析が完了しました！")
-    st.balloons()
-    st.subheader("分析結果ビデオ")
-    st.video(st.session_state.video_bytes)
-    st.subheader("分析結果サマリー")
-
-    summary = st.session_state.summary
-    static_tilt_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    st.metric(label="静的傾斜 (立位姿勢のクセ)", value=static_tilt_text)
-
-    col1, col2 = st.columns(2)
-    col1.metric(label="動的傾斜 (歩行中の揺れ・右)", value=f"{abs(summary['avg_right_down_dynamic']):.2f}")
-    col2.metric(label="動的傾斜 (歩行中の揺れ・左)", value=f"{summary['avg_left_down_dynamic']:.2f}")
-
-    st.download_button(label="結果のビデオをダウンロード",
-                       data=st.session_state.video_bytes,
-                       file_name="result.mp4", mime="video/mp4")
-    if st.button("新しい動画を分析する"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-
-def main_app():
-    st.set_page_config(page_title="歩行分析アプリ", layout="wide")
-    if 'page' not in st.session_state:
-        st.session_state.page = 'main'
-    if st.session_state.page == 'main':
-        st.title("🚶‍♂️ 歩行分析アプリ")
-        st.write("---")
-        st.write("スマホで撮影した歩行動画をアップロードするだけで、体幹の側屈を自動で分析し、グラフ付きの動画を生成します。")
-        uploaded_file = st.file_uploader("ここに動画ファイルをドラッグ＆ドロップしてください",
-                                         type=["mp4", "mov", "avi", "m4v"], key="file_uploader")
-        if uploaded_file:
-            st.session_state.uploaded_file_data = uploaded_file.getvalue()
-            st.session_state.page = "confirm"
-            st.rerun()
-    elif st.session_state.page == "confirm":
-        st.title("分析内容の確認")
-        st.video(st.session_state.uploaded_file_data)
-        st.write("---")
-        if st.button("この動画を分析する", type="primary"):
-            st.session_state.page = "analysis"
-            st.rerun()
-    elif st.session_state.page == "analysis":
-        st.title("分析中...")
-        progress_bar = st.progress(0.0)
-        status_text = st.empty()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-            tfile.write(st.session_state.uploaded_file_data)
-            temp_video_path = tfile.name
-        output_video_path, summary = None, None
-        try:
-            output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text)
-            if output_video_path and summary:
-                with open(output_video_path, 'rb') as f:
-                    st.session_state.video_bytes = f.read()
-                st.session_state.summary = summary
-                st.session_state.page = "results"
-            else:
-                st.session_state.page = "error"
-        finally:
-            if os.path.exists(temp_video_path):
-                os.remove(temp_video_path)
-            if output_video_path and os.path.exists(output_video_path):
-                os.remove(output_video_path)
-        st.rerun()
-    elif st.session_state.page == "results":
-        display_results()
-    elif st.session_state.page == "error":
-        st.error("分析中にエラーが発生しました。")
-        if st.button("やり直す"):
-            st.session_state.page = "main"
-            st.rerun()
-
-if __name__ == "__main__":
-    main_app()
