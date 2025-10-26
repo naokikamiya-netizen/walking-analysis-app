@@ -1,5 +1,5 @@
 # ==========================================================
-#  app.py - 歩行分析アプリ (v1.8 - 自動回転検出付き)
+#  app.py - 歩行分析アプリ (v1.9 - 回転補正なし / アップロードしたまま分析)
 # ==========================================================
 import streamlit as st
 from scipy.signal import find_peaks
@@ -12,61 +12,6 @@ import matplotlib.pyplot as plt
 import os
 import tempfile
 import japanize_matplotlib  # 日本語表示のため
-
-# ==========================================================
-# 🔧 自動回転検出と補正関数
-# ==========================================================
-def detect_rotate_code(video_path, pose, max_samples=30):
-    cap = cv2.VideoCapture(video_path)
-    rotate_code = None
-
-    # ① メタデータから回転を取得できる場合は優先
-    if hasattr(cv2, "CAP_PROP_ORIENTATION_META"):
-        orientation = cap.get(cv2.CAP_PROP_ORIENTATION_META)
-        meta_map = {
-            90: cv2.ROTATE_90_CLOCKWISE,
-            180: cv2.ROTATE_180,
-            270: cv2.ROTATE_90_COUNTERCLOCKWISE
-        }
-        if orientation in meta_map:
-            rotate_code = meta_map[int(orientation)]
-
-    # ② メタデータなしの場合は肩ラインの角度から推定
-    if rotate_code is None:
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        step = max(total // max_samples, 1) if total else 1
-        angles = []
-        for idx in range(0, total, step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if not ret:
-                break
-            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            res = pose.process(img_rgb)
-            if not res.pose_landmarks:
-                continue
-            lm = res.pose_landmarks.landmark
-            ls = lm[mp.solutions.pose.PoseLandmark.LEFT_SHOULDER.value]
-            rs = lm[mp.solutions.pose.PoseLandmark.RIGHT_SHOULDER.value]
-            angle = math.degrees(math.atan2((rs.y - ls.y), (rs.x - ls.x)))
-            angles.append(angle)
-            if len(angles) >= max_samples:
-                break
-        if len(angles) >= 3:
-            med = float(np.median(np.array(angles)))
-            if med > 45:
-                rotate_code = cv2.ROTATE_90_COUNTERCLOCKWISE
-            elif med < -45:
-                rotate_code = cv2.ROTATE_90_CLOCKWISE
-    cap.release()
-    return rotate_code
-
-
-def apply_rotation_get_size(frame, rotate_code):
-    if rotate_code is not None:
-        frame = cv2.rotate(frame, rotate_code)
-    h, w = frame.shape[:2]
-    return frame, w, h
 
 
 # ==========================================================
@@ -86,40 +31,34 @@ def analyze_walking(video_path, progress_bar, status_text):
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    rotate_code = detect_rotate_code(video_path, pose)
-
-    success, first_frame = cap.read()
-    if not success:
-        st.error("エラー: 動画フレームを読み込めませんでした。")
-        cap.release()
+    ret, first_frame = cap.read()
+    if not ret:
+        st.error("エラー: 動画を読み込めませんでした。")
         return None, None
 
-    first_frame, frame_w, frame_h = apply_rotation_get_size(first_frame, rotate_code)
+    frame_h, frame_w = first_frame.shape[:2]
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     all_angles, all_landmarks = [], []
-    orientation_locked = False
-    is_flipped = False
+    is_flipped, orientation_locked = False, False
 
     for frame_count in range(total_frames):
-        success, image = cap.read()
-        if not success:
+        ret, frame = cap.read()
+        if not ret:
             break
-        if rotate_code is not None:
-            image = cv2.rotate(image, rotate_code)
 
         progress_bar.progress((frame_count + 1) / total_frames * 0.5)
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(image_rgb)
         all_landmarks.append(results.pose_landmarks)
         current_angle = 0
 
         if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
+            lm = results.pose_landmarks.landmark
             try:
-                p_ls_raw = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-                p_rs_raw = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-                nose = landmarks[mp_pose.PoseLandmark.NOSE.value]
+                p_ls_raw = lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+                p_rs_raw = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+                nose = lm[mp_pose.PoseLandmark.NOSE.value]
 
                 if not orientation_locked and p_ls_raw.visibility > 0.7 and p_rs_raw.visibility > 0.7:
                     if nose.visibility < 0.1:
@@ -129,9 +68,9 @@ def analyze_walking(video_path, progress_bar, status_text):
 
                 if p_ls_raw.visibility > 0.5 and p_rs_raw.visibility > 0.5:
                     p_ls, p_rs = (p_rs_raw, p_ls_raw) if is_flipped else (p_ls_raw, p_rs_raw)
-                    delta_y = (p_rs.y - p_ls.y) * frame_h
-                    delta_x = (p_rs.x - p_ls.x) * frame_w
-                    angle = math.degrees(math.atan2(delta_y, delta_x))
+                    dy = (p_rs.y - p_ls.y) * frame_h
+                    dx = (p_rs.x - p_ls.x) * frame_w
+                    angle = math.degrees(math.atan2(dy, dx))
                     if angle > 90:
                         angle -= 180
                     elif angle < -90:
@@ -148,196 +87,36 @@ def analyze_walking(video_path, progress_bar, status_text):
     if not all_angles or len(all_angles) < int(fps):
         return None, None
 
-    filtered_angles = [all_angles[0]]
-    spike_threshold = 10.0
+    filtered = [all_angles[0]]
     for i in range(1, len(all_angles)):
-        if abs(all_angles[i] - filtered_angles[-1]) > spike_threshold:
-            filtered_angles.append(filtered_angles[-1])
+        if abs(all_angles[i] - filtered[-1]) > 10:
+            filtered.append(filtered[-1])
         else:
-            filtered_angles.append(all_angles[i])
-    angles_series = pd.Series(filtered_angles)
-    smoothed_angles = angles_series.rolling(window=11, min_periods=1, center=True).mean().tolist()
-    angles_np = np.array(smoothed_angles)
+            filtered.append(all_angles[i])
 
-    num_static_frames = min(int(fps * 1.0), 30)
-    if len(angles_np) <= num_static_frames:
+    smoothed = pd.Series(filtered).rolling(window=11, min_periods=1, center=True).mean().tolist()
+    angles = np.array(smoothed)
+
+    num_static = min(int(fps * 1.0), 30)
+    if len(angles) <= num_static:
         return None, None
-    static_tilt = np.mean(angles_np[:num_static_frames])
-    dynamic_angles_np = angles_np[num_static_frames:]
-    left_down_angles = dynamic_angles_np[dynamic_angles_np > 0]
-    right_down_angles = dynamic_angles_np[dynamic_angles_np < 0]
+
+    static_tilt = np.mean(angles[:num_static])
+    dyn = angles[num_static:]
+    left = dyn[dyn > 0]
+    right = dyn[dyn < 0]
 
     summary = {
         'static_tilt': static_tilt,
-        'avg_left_down_dynamic': np.mean(left_down_angles) if len(left_down_angles) > 0 else 0,
-        'avg_right_down_dynamic': np.mean(right_down_angles) if len(right_down_angles) > 0 else 0
+        'avg_left_down_dynamic': np.mean(left) if len(left) > 0 else 0,
+        'avg_right_down_dynamic': np.mean(right) if len(right) > 0 else 0
     }
 
-    # --- 結果ビデオ生成 ---
+    # ====== グラフと動画出力 ======
     status_text.text("ステップ2/2: 結果のビデオを生成中...")
     cap = cv2.VideoCapture(video_path)
-    right_panel_w = int(frame_w * 0.7)
-    final_w = frame_w + right_panel_w
+    right_w = int(frame_w * 0.7)
+    final_w = frame_w + right_w
     final_h = frame_h
 
     temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    out = cv2.VideoWriter(temp_output.name, cv2.VideoWriter_fourcc(*'mp4v'), fps, (final_w, final_h))
-
-    time_stamps = np.arange(len(angles_np)) / fps
-    y_limit = 15.0
-    summary_h = int(final_h * 0.45)
-    font_size_label = 20
-    font_size_value = 28
-
-    fig_s, ax_s = plt.subplots(figsize=(right_panel_w/100, summary_h/100), dpi=100, facecolor='#1E1E1E')
-    ax_s.axis('off')
-    static_label = "静的傾斜 (立位):"
-    static_value_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    ax_s.text(0.5, 0.85, static_label, color='white', fontsize=font_size_label, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    ax_s.text(0.5, 0.65, static_value_text, color='#FFC300', fontsize=font_size_value, ha='center', va='center', transform=ax_s.transAxes, weight='bold')
-    texts_left = [(0.1, 0.35, "動的傾斜 (左):", '#33FF57', font_size_label)]
-    texts_right = [(0.9, 0.35, f"{summary['avg_left_down_dynamic']:.2f} 度", '#33FF57', font_size_value)]
-    texts_left.append((0.1, 0.1, "動的傾斜 (右):", '#33A8FF', font_size_label))
-    texts_right.append((0.9, 0.1, f"{abs(summary['avg_right_down_dynamic']):.2f} 度", '#33A8FF', font_size_value))
-
-    for x, y, text, color, size in texts_left:
-        ax_s.text(x, y, text, color=color, fontsize=size, ha='left', va='center', transform=ax_s.transAxes, weight='bold')
-    for x, y, text, color, size in texts_right:
-        ax_s.text(x, y, text, color=color, fontsize=size, ha='right', va='center', transform=ax_s.transAxes, weight='bold')
-    fig_s.tight_layout(pad=0)
-    fig_s.canvas.draw()
-    summary_img_base = cv2.cvtColor(np.asarray(fig_s.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
-    plt.close(fig_s)
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for i in range(total_frames):
-        success, image = cap.read()
-        if not success:
-            break
-        if rotate_code is not None:
-            image = cv2.rotate(image, rotate_code)
-        progress_bar.progress(0.5 + (i + 1) / total_frames * 0.5)
-        if i < len(all_landmarks) and all_landmarks[i]:
-            mp_drawing.draw_landmarks(
-                image, all_landmarks[i], mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
-                connection_drawing_spec=mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
-            )
-        graph_h = final_h - summary_h
-        fig_g, ax_g = plt.subplots(figsize=(right_panel_w/100, graph_h/100), dpi=100)
-        fig_g.set_facecolor('#1E1E1E')
-        ax_g.set_facecolor('#1E1E1E')
-        ax_g.tick_params(colors='white', labelsize=10)
-        [s.set_edgecolor('white') for s in ax_g.spines.values()]
-        ax_g.plot(time_stamps, angles_np, color='#00FFFF', lw=2)
-        if i < len(time_stamps):
-            ax_g.plot(time_stamps[i], angles_np[i], 'o', markersize=8, color='#FF1493')
-        ax_g.axhline(0, color='red', linestyle='--', lw=1)
-        ax_g.set_title('肩ラインの傾斜 (生の角度)', color='white', fontsize=16, pad=10)
-        ax_g.set_xlabel('時間(秒)', color='white', fontsize=12)
-        ax_g.set_ylabel('角度(度)', color='white', fontsize=12)
-        ax_g.set_ylim(-y_limit, y_limit)
-        ax_g.grid(True, linestyle=':', color='gray', alpha=0.7)
-        ax_g.legend([], frameon=False)
-        fig_g.tight_layout(pad=1.5)
-        fig_g.canvas.draw()
-        graph_img = cv2.cvtColor(np.asarray(fig_g.canvas.buffer_rgba()), cv2.COLOR_RGBA2BGR)
-        plt.close(fig_g)
-        right_panel = cv2.vconcat([graph_img, summary_img_base])
-        final_frame = cv2.hconcat([image, right_panel])
-        out.write(final_frame)
-
-    out.release()
-    cap.release()
-    status_text.text("完了！")
-    return temp_output.name, summary
-
-
-# ==========================================================
-# 🧩 結果表示用関数
-# ==========================================================
-def display_results():
-    st.success("🎉 分析が完了しました！")
-    st.balloons()
-    st.subheader("分析結果ビデオ")
-    st.video(st.session_state.video_bytes)
-    st.subheader("分析結果サマリー")
-
-    summary = st.session_state.summary
-    static_tilt_text = f"{abs(summary['static_tilt']):.2f} 度 ({'右' if summary['static_tilt'] < 0 else '左'}肩下がり)"
-    st.metric(label="静的傾斜 (立位姿勢のクセ)", value=static_tilt_text)
-
-    col1, col2 = st.columns(2)
-    col1.metric(label="動的傾斜 (歩行中の揺れ・右)", value=f"{abs(summary['avg_right_down_dynamic']):.2f}")
-    col2.metric(label="動的傾斜 (歩行中の揺れ・左)", value=f"{summary['avg_left_down_dynamic']:.2f}")
-
-    st.download_button(label="結果のビデオをダウンロード", data=st.session_state.video_bytes,
-                       file_name="result.mp4", mime="video/mp4")
-    if st.button("新しい動画を分析する"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-
-
-# ==========================================================
-# 🚀 Streamlit UI本体
-# ==========================================================
-def main_app():
-    st.set_page_config(page_title="歩行分析アプリ", layout="wide")
-    if 'page' not in st.session_state:
-        st.session_state.page = 'main'
-
-    if st.session_state.page == 'main':
-        st.title("🚶‍♂️ 歩行分析アプリ")
-        st.write("---")
-        st.write("スマホで撮影した歩行動画をアップロードするだけで、体幹の側屈を自動で分析し、グラフ付きの動画を生成します。")
-        uploaded_file = st.file_uploader("ここに動画ファイルをドラッグ＆ドロップしてください", type=["mp4", "mov", "avi", "m4v"], key="file_uploader")
-        if uploaded_file:
-            st.session_state.uploaded_file_data = uploaded_file.getvalue()
-            st.session_state.page = "confirm"
-            st.rerun()
-
-    elif st.session_state.page == "confirm":
-        st.title("分析内容の確認")
-        st.video(st.session_state.uploaded_file_data)
-        st.write("---")
-        if st.button("この動画を分析する", type="primary"):
-            st.session_state.page = "analysis"
-            st.rerun()
-
-    elif st.session_state.page == "analysis":
-        st.title("分析中...")
-        progress_bar = st.progress(0.0)
-        status_text = st.empty()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-            tfile.write(st.session_state.uploaded_file_data)
-            temp_video_path = tfile.name
-        output_video_path, summary = None, None
-        try:
-            output_video_path, summary = analyze_walking(temp_video_path, progress_bar, status_text)
-            if output_video_path and summary:
-                with open(output_video_path, 'rb') as f:
-                    st.session_state.video_bytes = f.read()
-                st.session_state.summary = summary
-                st.session_state.page = "results"
-            else:
-                st.session_state.page = "error"
-        finally:
-            if os.path.exists(temp_video_path):
-                os.remove(temp_video_path)
-            if output_video_path and os.path.exists(output_video_path):
-                os.remove(output_video_path)
-        st.rerun()
-
-    elif st.session_state.page == "results":
-        display_results()
-
-    elif st.session_state.page == "error":
-        st.error("分析中にエラーが発生しました。動画が短すぎるか、人物がうまく認識できなかった可能性があります。")
-        if st.button("やり直す"):
-            st.session_state.page = "main"
-            st.rerun()
-
-
-if __name__ == "__main__":
-    main_app()
