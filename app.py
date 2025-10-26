@@ -164,3 +164,28 @@ def analyze_walking(video_path, progress_bar, status_text):
     cap.release()
     status_text.text("完了！")
     return temp_output.name, summary
+# ==========================================================
+# Streamlit UI（アプリの表示部分）
+# ==========================================================
+st.set_page_config(page_title="歩行分析アプリ", layout="wide")
+st.title("歩行分析アプリ（回転なしver）")
+
+uploaded_file = st.file_uploader("歩行動画をアップロードしてください", type=["mp4", "mov", "avi"])
+
+if uploaded_file is not None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_path = tmp_file.name
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    output_path, summary = analyze_walking(tmp_path, progress_bar, status_text)
+
+    if output_path:
+        st.success("分析が完了しました！結果を再生できます👇")
+        st.video(output_path)
+        st.write("### 結果サマリー")
+        st.json(summary)
+    else:
+        st.error("動画の分析に失敗しました。別の動画をお試しください。")
